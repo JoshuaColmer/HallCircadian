@@ -6,7 +6,7 @@ To try it out, the best place to start is the jupyter notebook. This is what you
 
 	1. A working version of python and tensorflow. A simple installation on your laptop could probably just be done with pip. (https://www.tensorflow.org/install/)
 	2. The data: we have provided this in the folder “Data”, this provided data can be replaced in the notebook with your own data.		
-    - X_train_raw is the Romanowski expression matrix before scaling and feature selection [Our training data]
+    	- X_train_raw is the Romanowski expression matrix before scaling and feature selection [Our training data]
 		- X_valid_raw is the Yang expression matrix before scaling and feature selection [Our validation data]
 		- X_test_raw_A/B are the Graf expression matrices for the two different ecotypes before scaling and feature selection [Our test data]
 		- X_train_postprocessed is the Romanowski expression matrix after scaling and feature selection [Our training data]
