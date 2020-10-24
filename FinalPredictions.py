@@ -8,7 +8,7 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.optimizers import Adam, Adadelta, Adagrad, Nadam, SGD, RMSprop
+from tensorflow.keras.optimizers import Adam
 from sklearn.preprocessing import MinMaxScaler, normalize
 from functools import reduce
 import random
@@ -24,10 +24,10 @@ np.random.seed(SEED)
 tf.random.set_seed(SEED)
 os.environ['PYTHONHASHSEED'] = str(SEED)
 
-df = pd.read_csv('200407_romanowski_At_data_transcript_tpm_av_exp.csv').T
-df_valid = pd.read_csv('200612_yang_At_data_transcript_tpm_all_reps_0counts_rm_LLCTonly.csv').T
-df_test = pd.concat((pd.read_csv('200708_forJosh_TPM_lineA.txt').T, pd.read_csv('200708_forJosh_TPM_lineB.txt').T)).iloc[[0, 1, 2, 4, 5], :]
-rach_clusters = pd.read_csv('200611_Romanowski_At_WGCNA_6033genes_signed_power16_8clusters_merge_0.15.csv')
+df = pd.read_csv('X_train_raw.csv').T
+df_valid = pd.read_csv('X_valid_raw.csv').T
+df_test = pd.concat((pd.read_csv('X_test_raw_A.txt').T, pd.read_csv('X_test_raw_B.txt').T)).iloc[[0, 1, 2, 4, 5], :]
+rach_clusters = pd.read_csv('X_train_clusters.csv')
 Y_data = df.iloc[1:, -1].astype('float64')
 Y_copy = Y_data
 Y_valid_data = df_valid.iloc[1:, -1].astype('float64')
@@ -127,8 +127,6 @@ Y_valid_data = np.concatenate((Y_valid_cos.values.reshape(-1, 1), Y_valid_sin.va
 error = 0  # Initialise error
 all_preds = np.zeros((Y_data.shape[0], 2))  # Create empty array
 all_valid_preds = np.zeros((Y_valid_data.shape[0], 2))  # Create empty array
-# all_preds = np.zeros((y.shape[0]))  # Create empty array
-# all_preds_circ = np.zeros((y.shape[0], 2))  # Create empty array
 early_stop = EarlyStopping(patience=50, restore_best_weights=True, monitor='val_loss', mode='min')
 
 
@@ -142,42 +140,20 @@ def reset_seeds(reset_graph_with_backend=None, seed=0):
     random.seed(seed)
     tf.compat.v1.set_random_seed(seed)
 
-
-
-
-
-
-
-
-#
 valid_preds = []
 test_preds = []
 
 for n_fold, (train_idx, valid_idx) in enumerate(folds.split(X_data, Y_data)):
     X_train, Y_train = X_data[train_idx], Y_data[train_idx]  # Define training data for this iteration
     X_valid, Y_valid = X_data[valid_idx], Y_data[valid_idx]
-    # reg = lgb.LGBMRegressor(n_estimators=10000, min_data=1, min_data_in_bin=1)
-    # reg = MultiOutputRegressor(lgb.LGBMRegressor(n_estimators=10, min_data=1, min_data_in_bin=1), n_jobs=-1)
-    # reg.fit(X_train, Y_train)
-    # preds = reg.predict(X_valid)
-    # print(cyclical_loss(Y_valid, preds))
-
     model = larger_model()
     model.fit(X_train.astype('float64'), Y_train.astype('float64'), validation_data=(X_valid.astype('float64'), Y_valid.astype('float64')),
               batch_size=1, epochs=5000, callbacks=[early_stop])  # Fit the model on the training data
-    # model.fit(train_x, train_y)
     preds = normalize(model.predict(X_valid))  # Predict on the validation data
     all_preds[valid_idx] = normalize(model.predict(X_valid))
     all_valid_preds += (normalize(model.predict(X_valid_data)) / n_folds)
     valid_preds.append(normalize(model.predict(X_valid_data)))
     test_preds.append(normalize(model.predict(X_test_data)))
-    # y_cos = np.cos((2 * np.pi * y / 24)-(np.pi/2))
-    # y_sin = np.sin((2 * np.pi * y / 24)-(np.pi/2))
-    # y_circ = np.stack((y_cos, y_sin)).T
-    # preds_cos = np.cos((2 * np.pi * preds / 24)-(np.pi/2))
-    # preds_sin = np.sin((2 * np.pi * preds / 24)-(np.pi/2))
-    # preds_circ = np.stack((preds_cos, preds_sin)).T
-    # all_preds_circ[valid_idx] = preds_circ
     error += cyclical_loss(Y_valid.astype('float64'), preds.astype('float64'))  # Evaluate the predictions
     print(cyclical_loss(Y_valid.astype('float64'), preds.astype('float64')) / Y_valid.shape[0])
 
@@ -231,15 +207,11 @@ ax = sn.lineplot(np.arange(Y_valid_copy.shape[0]), Y_valid_copy)
 ax = sn.lineplot(np.arange(Y_valid_copy.shape[0]), angles_arr_valid.ravel())
 plt.show()
 
-# print("Average error = {}".format(cyclical_loss(Y_data.astype('float64'), all_preds.astype('float64')) / Y_data.shape[0]))
 print("Average training error = {} minutes".format(60 * 12 * cyclical_loss(Y_data.astype('float64'), all_preds.astype('float64')) / (Y_data.shape[0] * np.pi)))
 
-# print("Average error = {}".format(cyclical_loss(Y_valid_data.astype('float64'), all_valid_preds.astype('float64')) / Y_valid_data.shape[0]))
 print("Average validation error = {} minutes".format(60 * 12 * cyclical_loss(Y_valid_data.astype('float64'), valid_preds.astype('float64')) / (Y_valid_data.shape[0] * np.pi)))
 
 Y_copy1 = np.array([2, 5, 8, 11, 14, 17, 20, 23, 2, 5, 8, 11, 14, 17, 20, 23])
-from sklearn.metrics import mean_absolute_error
-# print(mean_absolute_error(Y_copy1, hour_pred_valid.ravel()) * 60, "minutes")
 
 test_angles = []
 test_preds_copy = test_preds
@@ -261,7 +233,6 @@ angles_arr_test = np.vstack(test_angles)
 hour_pred_test = angles_arr_test
 Y_test = np.array([12, 0, 12, 0])
 
-# print(mean_absolute_error(Y_test, hour_pred_test.ravel()) * 60, "minutes")
 Y_test_cos = -np.cos((2 * np.pi * Y_test.astype('float64') / 24) + (np.pi / 2))
 Y_test_sin = np.sin((2 * np.pi * Y_test.astype('float64') / 24) + (np.pi / 2))
 Y_test_ang = np.concatenate((Y_test_cos.reshape(-1, 1), Y_test_sin.reshape(-1, 1)), axis=1)

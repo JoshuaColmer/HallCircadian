@@ -1,6 +1,5 @@
 import numpy as np
 import tqdm
-import ARSER
 
 def autocorr(x):
     n = x.size
