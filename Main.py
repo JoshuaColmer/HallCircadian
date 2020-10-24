@@ -9,21 +9,25 @@ import gc
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
-from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard, EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.optimizers import Adam
-from sklearn.preprocessing import MinMaxScaler, normalize, StandardScaler
+from sklearn.preprocessing import MinMaxScaler, normalize
 import FourierClock
 from scipy.stats import ks_2samp
 from functools import reduce
 import random
 import os
+from numpy.linalg import norm
 
-N_GENES = 250
+val_errors1 = []
+test_errors1 = []
+
+N_GENES = 5000
 SEED = 0
 random.seed(SEED)
 np.random.seed(SEED)
 tf.random.set_seed(SEED)
-os.environ['PYTHONHASHSEED']=str(SEED)
+os.environ['PYTHONHASHSEED'] = str(SEED)
 
 df = pd.read_csv('200407_romanowski_At_data_transcript_tpm_av_exp.csv').T
 df_valid = pd.read_csv('200612_yang_At_data_transcript_tpm_all_reps_0counts_rm_LLCTonly.csv').T
@@ -65,18 +69,15 @@ X_test_data.columns = X_test_ID
 
 # Variance threshold
 from sklearn.feature_selection import VarianceThreshold
-selector = VarianceThreshold(threshold=1)
+selector = VarianceThreshold()
 selector.fit(X_data)
-var_idx = selector.variances_ > 1
+var_idx = selector.variances_ > 5
 X_data = X_data.iloc[:, var_idx]
 X_ID = X_ID.iloc[var_idx]
 X_valid_data = X_valid_data.iloc[:, var_idx]
 X_valid_ID = X_valid_ID.iloc[var_idx]
 X_test_data = X_test_data.iloc[:, var_idx]
 X_test_ID = X_test_ID.iloc[var_idx]
-# X_data = pd.DataFrame(selector.transform(X_data))
-# X_valid_data = pd.DataFrame(selector.transform(X_valid_data))
-# X_test_data = pd.DataFrame(selector.transform(X_test_data))
 
 X_data.reset_index(inplace=True, drop=True)
 X_valid_data.reset_index(inplace=True, drop=True)
@@ -90,24 +91,22 @@ del df
 gc.collect()
 
 n_folds = Y_data.shape[0]
-# n_folds = 6
 folds = KFold(n_splits=n_folds, shuffle=True, random_state=SEED)
 
-y_cos = np.cos((2 * np.pi * Y_data.astype('float64') / 24)-(np.pi/2))
-y_sin = np.sin((2 * np.pi * Y_data.astype('float64') / 24)-(np.pi/2))
+y_cos = -np.cos((2 * np.pi * Y_data.astype('float64') / 24)+(np.pi/2))
+y_sin = np.sin((2 * np.pi * Y_data.astype('float64') / 24)+(np.pi/2))
 
-Y_valid_cos = np.cos((2 * np.pi * Y_valid_data.astype('float64') / 24)-(np.pi/2))
-Y_valid_sin = np.sin((2 * np.pi * Y_valid_data.astype('float64') / 24)-(np.pi/2))
+Y_valid_cos = -np.cos((2 * np.pi * Y_valid_data.astype('float64') / 24)+(np.pi/2))
+Y_valid_sin = np.sin((2 * np.pi * Y_valid_data.astype('float64') / 24)+(np.pi/2))
 
 def cyclical_loss(y_true, y_pred):
     error = 0
     for i in range(y_pred.shape[0]):
-        error += np.abs(math.atan2(y_pred[i, 1], y_pred[i, 0]) - math.atan2(y_true[i, 1], y_true[i, 0]))
+        error += np.arccos((y_true[i, :] @ y_pred[i, :]) / (norm(y_true[i, :]) * norm(y_pred[i, :])))
     return error
 
 def custom_loss(y_true, y_pred):
-    error = tf.abs(tf.atan2(y_pred[:, 1], y_pred[:, 0]) - tf.atan2(y_true[:, 1], y_true[:, 0]))
-    return error
+    return tf.reduce_mean((tf.math.acos(tf.matmul(y_true, tf.transpose(y_pred)) / ((tf.norm(y_true) * tf.norm(y_pred)) + tf.keras.backend.epsilon()))**2))
 
 adam = Adam(lr=0.00001, beta_1=0.9, beta_2=0.999, amsgrad=False)
 
@@ -115,8 +114,8 @@ adam = Adam(lr=0.00001, beta_1=0.9, beta_2=0.999, amsgrad=False)
 def larger_model():
     # create model
     model = Sequential()
-    model.add(Dense(128, kernel_initializer='normal', activation='relu'))
-    model.add(Dense(512, kernel_initializer='normal', activation='relu'))
+    model.add(Dense(256, kernel_initializer='normal', activation='relu'))
+    model.add(Dense(1024, kernel_initializer='normal', activation='relu'))
     model.add(Dense(2, kernel_initializer='normal'))
     # Compile model
     model.compile(loss=custom_loss, optimizer=adam)
@@ -130,22 +129,43 @@ all_preds = np.zeros((Y_data.shape[0], 2))  # Create empty array
 all_valid_preds = np.zeros((Y_valid_data.shape[0], 2))  # Create empty array
 # all_preds = np.zeros((y.shape[0]))  # Create empty array
 # all_preds_circ = np.zeros((y.shape[0], 2))  # Create empty array
-early_stop = EarlyStopping(patience=20, restore_best_weights=True, monitor='val_loss', mode='min')
+early_stop = EarlyStopping(patience=100, restore_best_weights=True, monitor='val_loss', mode='min')
 
-indices, clock_genes, scores = FourierClock.get_autocorrelated_genes(X_data, X_ID)
-scores = np.abs(np.array(scores))
-scores = np.argsort(scores)
-indices = np.array(indices)
-indices = indices[scores]
-clock_genes = np.array(clock_genes)
-clock_genes = clock_genes[:N_GENES*6]
+auto_indices, auto_clock_genes, auto_scores = FourierClock.get_autocorrelated_genes(X_data, X_ID)
+auto_scores = np.abs(np.array(auto_scores))
+# auto_scores = np.argsort(auto_scores)
+# auto_indices = auto_scores[-N_GENES*6:]
+# auto_clock_genes = np.array(auto_clock_genes)
+# auto_clock_genes = auto_clock_genes[auto_indices]
 
-idx = np.where(X_ID.isin(clock_genes))[0]
+cross_indices, cross_clock_genes, cross_scores = FourierClock.cross_corr(X_data, Y_copy, X_ID)
+cross_scores = np.abs(np.array(cross_scores))
+# cross_scores = np.argsort(cross_scores)
+# cross_indices = cross_scores[-N_GENES*6:]
+# cross_clock_genes = np.array(cross_clock_genes)
+# cross_clock_genes = cross_clock_genes[cross_indices]
+
+scores = np.concatenate((auto_scores.reshape(-1, 1), cross_scores.reshape(-1, 1)), axis=1)
+
+auto_scores = np.argsort(np.mean(scores, axis=1))
+scores1 = np.mean(scores, axis=1)
+scores2 = np.concatenate((X_data.columns.values.reshape(-1, 1), scores1.reshape(-1, 1)), axis=1)
+auto_indices = auto_scores[-N_GENES*20:]
+auto_clock_genes = np.array(auto_clock_genes)
+auto_clock_genes = auto_clock_genes[auto_indices]
+auto_scores1 = scores1[auto_indices]
+
+idx = np.where(X_ID.isin(auto_clock_genes))[0]
 X_data = X_data.iloc[:, idx]
-idx_valid = np.where(X_valid_ID.isin(clock_genes))[0]
+scores2 = scores2[idx]
+idx_valid = np.where(X_valid_ID.isin(auto_clock_genes))[0]
 X_valid_data = X_valid_data.iloc[:, idx_valid]
-idx_test = np.where(X_test_ID.isin(clock_genes))[0]
+idx_test = np.where(X_test_ID.isin(auto_clock_genes))[0]
 X_test_data = X_test_data.iloc[:, idx_test]
+
+X_ID = X_ID.iloc[idx]
+X_valid_ID = X_valid_ID.iloc[idx_valid]
+X_test_ID = X_test_ID.iloc[idx_test]
 
 scores = []
 pvalues = []
@@ -156,22 +176,22 @@ for i in range(X_data.shape[1]):
     pvalues.append(l.pvalue)
 
 pvalues_idx = np.argsort(pvalues)
-scores = pvalues_idx[(pvalues_idx.shape[0]-N_GENES*6):]
+scores = pvalues_idx[(pvalues_idx.shape[0]-12*N_GENES):]
 
-similar_genes = clock_genes[scores]
+similar_genes = auto_clock_genes[scores]
 X_data = X_data.iloc[:, scores]
+scores2 = scores2[scores]
 X_ID = X_ID.iloc[scores]
 X_valid_data = X_valid_data.iloc[:, scores]
 X_test_data = X_test_data.iloc[:, scores]
+auto_scores1 = auto_scores1[scores]
 
 Y_copy_res = np.array([0, 4, 8, 12, 16, 20, 0, 4, 8, 12, 16, 20])
-indices, clock_genes = FourierClock.cross_corr(X_data, Y_copy_res, X_ID)
+# indices, clock_genes = FourierClock.cross_corr(X_data, Y_copy_res, X_ID)
 
 # X_data = X_data.iloc[:, indices[-1000:]]
 
-P = pd.DataFrame(X_ID).astype('str')
-L = pd.merge(P, rach_clusters, how='left', left_on='transcript', right_on='transcript')
-print(L['moduleColor'].value_counts())
+X_ID2 = X_data.columns.values
 
 scaler = MinMaxScaler()
 # scaler = StandardScaler()
@@ -181,14 +201,26 @@ X_data = scaler.transform(X_data)
 X_valid_data = scaler.transform(X_valid_data)
 X_test_data = scaler.transform(X_test_data)
 
-column_max = np.max(X_valid_data, axis=0)
-column_min = np.min(X_valid_data, axis=0)
-column_idx = column_max < 1.2
+X_data = pd.DataFrame(data=X_data, columns=X_ID2)
+X_valid_data = pd.DataFrame(data=X_valid_data, columns=X_ID2)
+X_test_data = pd.DataFrame(data=X_test_data, columns=X_ID2)
+
+column_max = np.max(X_valid_data.values, axis=0)
+column_min = np.min(X_valid_data.values, axis=0)
+column_idx = column_max < 1.4
 column_idx1 = column_min > -0.2
 column_idx = np.logical_and(column_idx, column_idx1)
-X_data = X_data[:, column_idx]
-X_valid_data = X_valid_data[:, column_idx]
-X_test_data = X_test_data[:, column_idx]
+X_data = X_data.iloc[:, column_idx]
+scores2 = scores2[column_idx]
+X_ID = X_ID.iloc[column_idx]
+X_valid_data = X_valid_data.iloc[:, column_idx]
+X_test_data = X_test_data.iloc[:, column_idx]
+auto_scores1 = auto_scores1[column_idx]
+
+# X_data = X_data[:, [13, 18, 3]]
+# X_valid_data = X_valid_data[:, [13, 18, 3]]
+# X_test_data = X_test_data[:, [13, 18, 3]]
+
 
 # column_max = np.max(X_test_data, axis=0)
 # column_min = np.min(X_test_data, axis=0)
@@ -203,8 +235,41 @@ X_test_data = X_test_data[:, column_idx]
 # X_valid_data = X_valid_data[:, [0, 3]]
 # X_test_data = X_test_data[:, [0, 3]]
 
+# P = pd.DataFrame(data=X_data.columns.values, columns=['transcript']).astype('str')
+# Q = pd.DataFrame(data=auto_scores1, columns=['score']).astype('float64')
+# P = pd.concat((P, Q), axis=1)
+P = pd.DataFrame(data=scores2, columns=['transcript', 'score'])
+L = pd.merge(P, rach_clusters, how='left', left_on='transcript', right_on='transcript')
+
+L.fillna(value='None', inplace=True)
+print(L['moduleColor'].value_counts())
+
+colours = L['moduleColor'].unique()
+
+IDs = []
+
+for i in range(colours.shape[0]):
+    colour = colours[i]
+    genes = L.loc[L['moduleColor'] == colour]
+    genes.sort_values(inplace=True, by='score')
+    genes = genes.iloc[-int(N_GENES/9):]
+    IDs.append(genes['transcript'])
+
+all_IDs = pd.concat((IDs))
+X_IDs = np.array(all_IDs.index)
+
+X_data = X_data.iloc[:, X_IDs]
+X_valid_data = X_valid_data.iloc[:, X_IDs]
+X_test_data = X_test_data.iloc[:, X_IDs]
+
+M = L.iloc[X_IDs]
+
 valid_preds = []
 test_preds = []
+
+X_data = X_data.values
+X_valid_data = X_valid_data.values
+X_test_data = X_test_data.values
 
 for n_fold, (train_idx, valid_idx) in enumerate(folds.split(X_data, Y_data)):
     X_train, Y_train = X_data[train_idx], Y_data[train_idx]  # Define training data for this iteration
@@ -233,56 +298,132 @@ for n_fold, (train_idx, valid_idx) in enumerate(folds.split(X_data, Y_data)):
     # preds_circ = np.stack((preds_cos, preds_sin)).T
     # all_preds_circ[valid_idx] = preds_circ
     error += cyclical_loss(Y_valid.astype('float64'), preds.astype('float64'))  # Evaluate the predictions
-    # error += cyclical_loss(y_circ.astype('float64'), preds_circ.astype('float64'))  # Evaluate the predictions
     print(cyclical_loss(Y_valid.astype('float64'), preds.astype('float64')) / Y_valid.shape[0])
 
 angles = []
 for i in range(all_preds.shape[0]):
-    angles.append(math.atan2(all_preds[i, 0], all_preds[i, 1]) / math.pi * 6)
+    angles.append(math.atan2(all_preds[i, 0], all_preds[i, 1]) / math.pi * 12)
+
+for j in range(len(angles)):
+    if angles[j] < 0:
+        angles[j] = angles[j] + 24
+
 ax = sn.scatterplot(Y_data[:, 0], Y_data[:, 1])
 ax = sn.scatterplot(all_preds[:, 0], all_preds[:, 1])
 plt.show()
 angles_arr = np.vstack(angles)
-hour_pred = 12 - 2 * angles_arr
+hour_pred = angles_arr
 
 plt.figure(dpi=500)
 ax = sn.lineplot(np.arange(Y_copy.shape[0]), Y_copy)
-ax = sn.lineplot(np.arange(Y_copy.shape[0]), 12 - 2 * angles_arr.ravel())
+ax = sn.lineplot(np.arange(Y_copy.shape[0]), angles_arr.ravel())
 plt.show()
+
+
+angles = []
+for i in range(all_preds.shape[0]):
+    angles.append(math.atan2(all_preds[i, 0], all_preds[i, 1]) / math.pi * 12)
+
+for j in range(len(angles)):
+    if angles[j] < 0:
+        angles[j] = angles[j] + 24
+
 
 valid_angles = []
 valid_preds = np.mean(valid_preds, axis=0)
 for i in range(valid_preds.shape[0]):
-    valid_angles.append(math.atan2(valid_preds[i, 0], valid_preds[i, 1]) / math.pi * 6)
+    valid_angles.append(math.atan2(valid_preds[i, 0], valid_preds[i, 1]) / math.pi * 12)
+
+for j in range(len(valid_angles)):
+    if valid_angles[j] < 0:
+        valid_angles[j] = valid_angles[j] + 24
 valid_preds = normalize(valid_preds)
 ax = sn.scatterplot(Y_valid_data[:, 0], Y_valid_data[:, 1])
 ax = sn.scatterplot(valid_preds[:, 0], valid_preds[:, 1])
 plt.show()
 angles_arr_valid = np.vstack(valid_angles)
-hour_pred_valid = 12 - 2 * angles_arr_valid
+hour_pred_valid = angles_arr_valid
 
 
 plt.figure(dpi=500)
 ax = sn.lineplot(np.arange(Y_valid_copy.shape[0]), Y_valid_copy)
-ax = sn.lineplot(np.arange(Y_valid_copy.shape[0]), 12 - 2 * angles_arr_valid.ravel())
+ax = sn.lineplot(np.arange(Y_valid_copy.shape[0]), angles_arr_valid.ravel())
 plt.show()
 
-print("Average error = {}".format(cyclical_loss(Y_data.astype('float64'), all_preds.astype('float64')) / Y_data.shape[0]))
-print("Average error = {} minutes".format(60 * 12 * cyclical_loss(Y_data.astype('float64'), all_preds.astype('float64')) / (Y_data.shape[0] * np.pi)))
+# print("Average error = {}".format(cyclical_loss(Y_data.astype('float64'), all_preds.astype('float64')) / Y_data.shape[0]))
+print("Average training error = {} minutes".format(60 * 12 * cyclical_loss(Y_data.astype('float64'), all_preds.astype('float64')) / (Y_data.shape[0] * np.pi)))
 
-print("Average error = {}".format(cyclical_loss(Y_valid_data.astype('float64'), all_valid_preds.astype('float64')) / Y_valid_data.shape[0]))
-print("Average error = {} minutes".format(60 * 12 * cyclical_loss(Y_valid_data.astype('float64'), all_valid_preds.astype('float64')) / (Y_valid_data.shape[0] * np.pi)))
+# print("Average error = {}".format(cyclical_loss(Y_valid_data.astype('float64'), all_valid_preds.astype('float64')) / Y_valid_data.shape[0]))
+print("Average validation error = {} minutes".format(60 * 12 * cyclical_loss(Y_valid_data.astype('float64'), valid_preds.astype('float64')) / (Y_valid_data.shape[0] * np.pi)))
 
 Y_copy1 = np.array([2, 5, 8, 11, 14, 17, 20, 23, 2, 5, 8, 11, 14, 17, 20, 23])
 from sklearn.metrics import mean_absolute_error
-print(mean_absolute_error(Y_copy1, hour_pred_valid.ravel()) * 60, "minutes")
+# print(mean_absolute_error(Y_copy1, hour_pred_valid.ravel()) * 60, "minutes")
 
 test_angles = []
+test_preds_copy = test_preds
 test_preds = np.mean(test_preds, axis=0)
+for j in range(len(test_preds_copy)):
+    for i in range(test_preds.shape[0]):
+        test_preds_copy[j][i, 0] = math.atan2(test_preds_copy[j][i, 0], test_preds_copy[j][i, 1]) / math.pi * 12
+        if test_preds_copy[j][i, 0] < 0:
+            test_preds_copy[j][i, 0] += 24
+    test_preds_copy[j] = np.delete(test_preds_copy[j], 1, 1)
+
 for i in range(test_preds.shape[0]):
-    test_angles.append(math.atan2(test_preds[i, 0], test_preds[i, 1]) / math.pi * 6)
+    test_angles.append(math.atan2(test_preds[i, 0], test_preds[i, 1]) / math.pi * 12)
+for j in range(len(test_angles)):
+    if test_angles[j] < 0:
+        test_angles[j] = test_angles[j] + 24
 test_preds = normalize(test_preds)
 angles_arr_test = np.vstack(test_angles)
-hour_pred_test = 12 - 2 * angles_arr_test
-Y_test = np.array([0, 12, 0, 12])
-print(mean_absolute_error(Y_test, hour_pred_test.ravel()) * 60, "minutes")
+hour_pred_test = angles_arr_test
+Y_test = np.array([12, 0, 12, 0])
+
+# print(mean_absolute_error(Y_test, hour_pred_test.ravel()) * 60, "minutes")
+Y_test_cos = -np.cos((2 * np.pi * Y_test.astype('float64') / 24) + (np.pi / 2))
+Y_test_sin = np.sin((2 * np.pi * Y_test.astype('float64') / 24) + (np.pi / 2))
+Y_test_ang = np.concatenate((Y_test_cos.reshape(-1, 1), Y_test_sin.reshape(-1, 1)), axis=1)
+print("Average test error = {} minutes".format(60 * 12 * cyclical_loss(Y_test_ang.astype('float64'), test_preds.astype('float64')) / (Y_test_ang.shape[0] * np.pi)))
+val_errors1.append(60 * 12 * cyclical_loss(Y_valid_data.astype('float64'), all_valid_preds.astype('float64')) / (Y_valid_data.shape[0] * np.pi))
+test_errors1.append(60 * 12 * cyclical_loss(Y_test_ang.astype('float64'), test_preds.astype('float64')) / (Y_test_ang.shape[0] * np.pi))
+
+# print(L['moduleColor'].value_counts())
+
+
+
+
+
+# plt.figure(dpi=500)
+# ax = sn.lineplot(np.arange(Y_valid_copy.shape[0]), Y_valid_copy)
+# ax = sn.lineplot(np.arange(Y_valid_copy.shape[0]), angles_arr_valid.ravel())
+# plt.title('Validation circadian time predictions', size=17)
+# plt.xlabel('Sample ID', size=17)
+# plt.xticks(size=13)
+# plt.yticks(size=13)
+# plt.ylabel('Circadian time (hr)', size=17)
+# plt.legend(['Actual', 'Predicted'], prop={'size': 15})
+# plt.tight_layout()
+# plt.savefig('SuppFigValError')
+# plt.show()
+
+# df = pd.read_csv('200407_romanowski_At_data_transcript_tpm_av_exp.csv').T
+# df = df.T
+# df_1 = df.loc[df['transcript'].isin(genes.values)]
+# df_valid = df_valid.T
+# df_valid1 = df_valid.loc[df_valid['transcript'].isin(genes.values)]
+# df_test = df_test.T
+# df_test1 = df_test.loc[df_test['transcript'].isin(genes.values)]
+# i = 13
+# ax = sn.lineplot(np.array([0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44]), df_1.iloc[i, 1:].values.astype('float'))
+# ax = sn.lineplot(np.array([2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47]), df_valid1.iloc[i, 1:].values.astype('float'))
+# ax = sn.scatterplot(np.array([12, 24]), df_test1.iloc[i, [1, 2]].values.astype('float'))
+# ax = sn.scatterplot(np.array([12, 24]), df_test1.iloc[i, [3, 4]].values.astype('float'))
+# plt.title('{}'.format(genes.iloc[i]), size=17)
+# plt.xlabel('Circadian time (hr)', size=17)
+# plt.ylabel('Gene expression (tpm)', size=17)
+# plt.xticks(size=13)
+# plt.yticks(size=13)
+# plt.legend(['Train', 'Validation', 'Test_A', 'Test_B'], prop={'size': 12})
+# plt.savefig('{}.png'.format(genes.iloc[i]), dpi=500)
+# plt.show()
